@@ -6,9 +6,10 @@ Aucune donnée d'exemple : tout part de zéro et se remplit avec tes comptes.
 
 ## Lancer
 
-Il faut [Node.js](https://nodejs.org) 18 ou plus, rien d'autre (aucune dépendance).
+Il faut [Node.js](https://nodejs.org) 18 ou plus.
 
 ```bash
+npm install   # une seule fois (SDK Claude)
 npm start
 ```
 
@@ -26,6 +27,24 @@ Ouvre ensuite http://localhost:3000 dans ton navigateur.
 - **Annonces** : à sourcer, prêtes à publier, en ligne, vendues… « Créer la vente » depuis une annonce reprend son titre, son prix et son coût.
 - **Comptes** : ajout, modification, statut, porte-monnaie, suppression, synchro Vinted.
 - **Réglages** : objectif mensuel, coût d'achat par défaut, sauvegarde / restauration, tout effacer.
+
+## Du sourcing à la mise en vente
+
+1. **Sourcer un article** (page Annonces) : colle le lien du produit chez ton fournisseur, « Lire la page » récupère titre, prix et image quand le site le permet (sinon saisis-les). Indique la livraison, les frais et le prix de revente prévu, ou clique « Estimer avec l'IA ». La marge s'affiche avant d'acheter. L'article part dans « À sourcer ».
+2. **Fiche annonce** : quand tu as l'article, ajoute tes vraies photos. Elles sont redimensionnées, et si tu le veux corrigées automatiquement (lumière, balance des couleurs) et recadrées en 3:4. Aucune image n'est générée : l'acheteur voit le vrai article.
+3. **Remplir avec l'IA** : l'IA regarde tes photos et rédige titre, description, état, couleur, catégorie, et propose un prix. Elle signale ce qu'il faut vérifier (taille, marque…). Relis toujours avant de publier.
+4. **Préparer la publication** : télécharge les photos dans l'ordre, ouvre le formulaire Vinted, copie chaque champ en un clic, publie, puis clique « C'est publié ». L'annonce passe « En ligne » et compte dans les publications du tableau de bord.
+5. **Créer la vente** depuis la fiche quand l'article est vendu : prix, coût et frais sont repris, l'annonce passe « Vendue ».
+
+La mise en ligne reste faite par toi sur Vinted : publier automatiquement demanderait de contourner les protections de Vinted, ce qui expose tes comptes à une suspension.
+
+## IA (Claude, ChatGPT ou Gemini)
+
+Dans Réglages > Intelligence artificielle : choisis l'IA, colle ta clé API, « Tester la connexion ». Les clés restent sur ton ordinateur dans `data/config.json` (jamais renvoyées au navigateur). Tu peux aussi utiliser les variables d'environnement `ANTHROPIC_API_KEY`, `OPENAI_API_KEY` ou `GEMINI_API_KEY`.
+
+- Claude : SDK officiel, modèle par défaut `claude-opus-5-5`, avec repli automatique sur un autre modèle Claude si une demande est refusée.
+- ChatGPT : modèle par défaut `gpt-4.1-mini`. Gemini : `gemini-2.5-flash`. Change le nom du modèle dans Réglages si ton compte en utilise un autre.
+- Chaque appel est facturé par le fournisseur choisi (quelques centimes par annonce selon le modèle).
 
 ## Calculs
 

@@ -438,7 +438,8 @@ function spark(values, color) {
   return `<div class="spark" style="color:${color}"><svg viewBox="0 0 ${W} ${H}" preserveAspectRatio="none" aria-hidden="true"><path d="${d}" fill="none" style="stroke:${color}" stroke-width="1.6" vector-effect="non-scaling-stroke" stroke-linejoin="round" stroke-linecap="round"/></svg><i style="top:${(last[1] / H * 100).toFixed(1)}%;background:${color}"></i></div>`;
 }
 function thumb(o) {
-  if (o.photo && /^https:\/\//.test(o.photo)) return `<span class="th"><img src="${esc(o.photo)}" alt="" loading="lazy" referrerpolicy="no-referrer"></span>`;
+  const src = o.photo || (o.photos && o.photos[0]);
+  if (src && /^(https:\/\/|photos\/[a-f0-9]+\.jpg$|data:image\/)/.test(src)) return `<span class="th"><img src="${esc(src)}" alt="" loading="lazy" referrerpolicy="no-referrer"></span>`;
   const c = CAT[o.category] || CAT[guessCat(o.title)];
   return `<span class="th"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="${ICONS[c.icon]}" style="fill:var(--slate-2)"/></svg></span>`;
 }
@@ -694,8 +695,8 @@ function renderAnnonces() {
   $('#a-tbl tbody').innerHTML = vis.map(l => `<tr data-listing="${esc(l.id)}"><td class="d">${l.publishedAt ? esc(DD.format(new Date(+l.publishedAt))) : '—'}</td><td>${esc(accName(l.accountId))}</td>
     <td class="t"><div>${thumb(l)}<span title="${esc(l.title)}">${esc(l.title)}</span></div></td>
     <td class="r">${l.price != null ? esc(eur2(+l.price)) : '—'}</td><td class="r">${l.views != null ? int(l.views) : '—'}</td><td class="r">${l.favourites != null ? int(l.favourites) : '—'}</td>
-    <td><select class="mini" data-listing-status="${esc(l.id)}" aria-label="Statut">${statusOptions(LIST_STATUS, l.status)}</select></td></tr>`).join('') ||
-    `<tr><td colspan="7" class="empty">${ST.listings.length ? 'Aucune annonce ne correspond aux filtres.' : 'Aucune annonce. Synchronise un compte ou ajoute une annonce.'}</td></tr>`;
+    <td><select class="mini" data-listing-status="${esc(l.id)}" aria-label="Statut">${statusOptions(LIST_STATUS, l.status)}</select></td><td>${['draft', 'sourcing'].includes(l.status) ? `<button class="btn" type="button" data-act="publish" data-id="${esc(l.id)}">Publier</button>` : ''}</td></tr>`).join('') ||
+    `<tr><td colspan="8" class="empty">${ST.listings.length ? 'Aucune annonce ne correspond aux filtres.' : 'Aucune annonce. Synchronise un compte ou ajoute une annonce.'}</td></tr>`;
   const more = $('#a-more');
   more.hidden = list.length <= UI.aLimit;
   more.textContent = `Afficher plus (${int(list.length - vis.length)} restantes)`;
@@ -725,6 +726,7 @@ function renderComptes() {
 function renderReglages() {
   $('#set-goal').value = +ST.settings.goal || 0;
   $('#set-cost').value = +ST.settings.defaultCostPct || 0;
+  renderAISettings();
   $('#store-info').textContent = store.mode === 'server'
     ? `Données enregistrées par le serveur local (fichier data/db.json, sauvegardes automatiques dans data/backups). ${plural(ST.accounts.length, 'compte', 'comptes')}, ${plural(ST.sales.length, 'vente', 'ventes')}, ${plural(ST.listings.length, 'annonce', 'annonces')}.`
     : `Données enregistrées dans ce navigateur uniquement. Lance « npm start » pour les garder dans un fichier. ${plural(ST.accounts.length, 'compte', 'comptes')}, ${plural(ST.sales.length, 'vente', 'ventes')}.`;
@@ -764,7 +766,7 @@ function openModal(html) {
   const f = mbox.querySelector('input,select,textarea,button');
   if (f) f.focus();
 }
-function closeModal() { modal.hidden = true; mbox.innerHTML = ''; if (lastFocus && lastFocus.focus) lastFocus.focus(); }
+function closeModal() { modal.hidden = true; mbox.innerHTML = ''; mbox.classList.remove('wide'); if (lastFocus && lastFocus.focus) lastFocus.focus(); }
 modal.addEventListener('click', e => { if (e.target.closest('[data-close]')) closeModal(); });
 document.addEventListener('keydown', e => { if (e.key === 'Escape' && !modal.hidden) closeModal(); });
 
@@ -912,40 +914,352 @@ function saleForm(s, preset) {
   });
 }
 
-/* ---------- annonces ---------- */
+/* ---------- annonces : fiche complète, photos, IA, publication ---------- */
+const CONDITIONS = ['Neuf avec étiquette', 'Neuf sans étiquette', 'Très bon état', 'Bon état', 'Satisfaisant'];
+const catOptions = sel => Object.entries(CAT).map(([k, c]) => `<option value="${k}"${k === sel ? ' selected' : ''}>${esc(c.label)}</option>`).join('');
+const isServer = () => store.mode === 'server';
+
+async function api(path, opts = {}) {
+  const r = await fetch(path, { ...opts, headers: { 'content-type': 'application/json', ...(opts.headers || {}) } });
+  const j = await r.json().catch(() => ({}));
+  if (!r.ok) throw new Error(j.error || 'HTTP ' + r.status);
+  return j;
+}
+async function aiRun(task, input) {
+  if (!isServer()) throw new Error("L'IA demande le serveur local : lance « npm start ».");
+  return (await api('api/ai/run', { method: 'POST', body: JSON.stringify({ task, input }) })).result;
+}
+
+/* Photos : redimensionnement, recadrage 3:4 et correction automatique (niveaux par canal = lumière + balance des blancs).
+   Le vrai article reste tel quel : aucune génération d'image. */
+async function loadImage(src) {
+  const img = new Image();
+  img.decoding = 'async';
+  img.src = src;
+  await img.decode();
+  return img;
+}
+function autoLevels(px) {
+  const hist = [new Uint32Array(256), new Uint32Array(256), new Uint32Array(256)];
+  for (let i = 0; i < px.length; i += 4) { hist[0][px[i]]++; hist[1][px[i + 1]]++; hist[2][px[i + 2]]++; }
+  const n = px.length / 4, cut = n * 0.005;
+  const lut = [0, 1, 2].map(c => {
+    let acc = 0, lo = 0, hi = 255;
+    for (let v = 0; v < 256; v++) { acc += hist[c][v]; if (acc > cut) { lo = v; break; } }
+    acc = 0;
+    for (let v = 255; v >= 0; v--) { acc += hist[c][v]; if (acc > cut) { hi = v; break; } }
+    hi = Math.max(hi, lo + 40);
+    const g = Math.min(2.2, 255 / (hi - lo));
+    const t = new Float32Array(256);
+    for (let v = 0; v < 256; v++) t[v] = clamp((v - lo) * g, 0, 255);
+    return t;
+  });
+  let sl = 0, cnt = 0;
+  for (let i = 0; i < px.length; i += 16) { sl += 0.299 * lut[0][px[i]] + 0.587 * lut[1][px[i + 1]] + 0.114 * lut[2][px[i + 2]]; cnt++; }
+  const mean = sl / cnt / 255;
+  const gamma = mean < 0.42 ? 0.8 : mean > 0.64 ? 1.1 : 1;
+  const out = lut.map(t => { const o = new Uint8ClampedArray(256); for (let v = 0; v < 256; v++) o[v] = 255 * Math.pow(t[v] / 255, gamma); return o; });
+  for (let i = 0; i < px.length; i += 4) { px[i] = out[0][px[i]]; px[i + 1] = out[1][px[i + 1]]; px[i + 2] = out[2][px[i + 2]]; }
+}
+function renderPhoto(img, { enhance, crop, max = 1600, quality = 0.88 }) {
+  let sw = img.naturalWidth, sh = img.naturalHeight, sx = 0, sy = 0;
+  if (crop) {
+    const target = 3 / 4;
+    if (sw / sh > target) { const nw = sh * target; sx = (sw - nw) / 2; sw = nw; } else { const nh = sw / target; sy = (sh - nh) / 2; sh = nh; }
+  }
+  const scale = Math.min(1, max / Math.max(sw, sh));
+  const w = Math.round(sw * scale), h = Math.round(sh * scale);
+  const c = document.createElement('canvas');
+  c.width = w; c.height = h;
+  const ctx = c.getContext('2d');
+  ctx.imageSmoothingQuality = 'high';
+  ctx.drawImage(img, sx, sy, sw, sh, 0, 0, w, h);
+  if (enhance) { const d = ctx.getImageData(0, 0, w, h); autoLevels(d.data); ctx.putImageData(d, 0, 0); }
+  return c.toDataURL('image/jpeg', quality);
+}
+async function storePhoto(dataUrl) {
+  if (!isServer()) return dataUrl; // mode navigateur : photo gardée dans les données (lourd)
+  return (await api('api/photos', { method: 'POST', body: JSON.stringify({ dataUrl }) })).url;
+}
+async function photoForAI(src) {
+  const img = await loadImage(src);
+  return renderPhoto(img, { enhance: false, crop: false, max: 1280, quality: 0.85 });
+}
+
 function listingForm(l) {
   if (needAccount()) return;
   const isNew = !l;
-  l = l || { id: uid(), accountId: UI.acc || ST.accounts[0].id, title: '', category: '', price: '', status: 'draft', publishedAt: null, views: null, favourites: null, cost: null, createdAt: Date.now(), source: 'manuel' };
-  formModal({
-    title: isNew ? 'Ajouter une annonce' : "Modifier l'annonce",
-    sub: l.extId ? `Annonce synchronisée depuis Vinted (n° ${l.extId}).` : null,
-    fields: [
-      { name: 'accountId', label: 'Compte', type: 'select', options: accOptions(l.accountId), required: true },
-      { name: 'status', label: 'Statut', type: 'select', options: statusOptions(LIST_STATUS, l.status) },
-      { name: 'title', label: 'Article', value: l.title, required: true, full: true },
-      { name: 'price', label: 'Prix affiché (€)', type: 'number', step: '0.01', min: 0, value: l.price == null ? '' : l.price },
-      { name: 'cost', label: "Coût d'achat (€)", type: 'number', step: '0.01', min: 0, value: l.cost == null ? '' : l.cost, hint: 'Repris dans la vente' },
-      { name: 'publishedAt', label: 'Publiée le', type: 'datetime-local', value: l.publishedAt ? toLocalInput(+l.publishedAt) : '', hint: 'Rempli automatiquement au passage « En ligne »' },
-      { name: 'views', label: 'Vues', type: 'number', step: '1', min: 0, value: l.views == null ? '' : l.views },
-    ],
-    submit: isNew ? 'Ajouter' : 'Enregistrer',
-    extra: isNew ? null : { html: '<button class="btn" type="button" id="mk-sale">Créer la vente</button>', bind: () => $('#mk-sale').addEventListener('click', () => { closeModal(); saleForm(null, { accountId: l.accountId, title: l.title, price: l.price || '', cost: l.cost == null ? null : l.cost, category: l.category, listingId: l.id, photo: l.photo || null }); }) },
-    onSubmit: d => {
-      if (!d.title.trim()) return "Indique le nom de l'article.";
-      const pub = d.publishedAt ? Date.parse(d.publishedAt) : null;
-      Object.assign(l, { accountId: d.accountId, status: d.status, title: d.title.trim(), price: parseNum(d.price), cost: parseNum(d.cost), views: parseNum(d.views), category: guessCat(d.title) });
-      l.publishedAt = pub && !isNaN(pub) ? pub : (['online', 'reserved', 'sold'].includes(l.status) && !l.publishedAt ? Date.now() : l.publishedAt || null);
-      if (isNew) ST.listings.push(l);
-      commit('listing', `${isNew ? 'Annonce ajoutée' : 'Annonce modifiée'} : ${l.title}`, l.accountId);
-      toast(isNew ? 'Annonce ajoutée' : 'Annonce enregistrée');
-    },
-    onDelete: isNew ? null : async () => {
+  l = l || { id: uid(), accountId: UI.acc || ST.accounts[0].id, title: '', category: '', price: null, status: 'draft', publishedAt: null, views: null, favourites: null, cost: null, fees: 0, photos: [], createdAt: Date.now(), source: 'manuel' };
+  const photos = [...(l.photos || [])];
+  const v = x => x == null ? '' : x;
+  openModal(`<h2 id="modal-t">${isNew ? 'Nouvelle annonce' : 'Fiche annonce'}</h2>
+    <p class="sub">${l.extId ? `Annonce synchronisée depuis Vinted (n° ${esc(l.extId)}). ` : ''}Ajoute tes vraies photos, laisse l'IA rédiger, vérifie, puis publie.</p>
+    <div class="ph-zone">
+      <div class="ph-grid" id="ph-grid"></div>
+      <div class="row" style="margin-top:10px">
+        <label class="btn" for="ph-in">+ Ajouter des photos</label>
+        <input id="ph-in" type="file" accept="image/*" multiple hidden>
+        <label class="chk"><input type="checkbox" id="ph-enh" checked> Améliorer lumière et couleurs</label>
+        <label class="chk"><input type="checkbox" id="ph-crop"> Recadrer en 3:4</label>
+      </div>
+      ${l.sourceImage ? `<p class="hint-l">Image du fournisseur (référence, à ne pas publier) : <a href="${esc(l.sourceImage)}" target="_blank" rel="noopener noreferrer">voir</a></p>` : ''}
+    </div>
+    <div class="row ai-row"><button class="btn ai" type="button" id="ai-fill">✦ Remplir avec l'IA</button><span class="muted" id="ai-status" style="font-size:12.5px"></span></div>
+    <ul class="warn-list" id="ai-warn" hidden></ul>
+    <form class="form" id="mform" novalidate>
+      <label>Compte<select name="accountId">${accOptions(l.accountId)}</select></label>
+      <label>Statut<select name="status">${statusOptions(LIST_STATUS, l.status)}</select></label>
+      <label class="full">Titre<input name="title" value="${esc(l.title)}" maxlength="100" required placeholder="Ex. Jupe longue gothique en dentelle noire"></label>
+      <label class="full">Description<textarea name="description" rows="5">${esc(v(l.description))}</textarea></label>
+      <label>Marque<input name="brand" value="${esc(v(l.brand))}"></label>
+      <label>Taille<input name="size" value="${esc(v(l.size))}" placeholder="Ex. M / 38"></label>
+      <label>État<select name="condition"><option value="">—</option>${CONDITIONS.map(c => `<option${c === l.condition ? ' selected' : ''}>${esc(c)}</option>`).join('')}</select></label>
+      <label>Couleur<input name="color" value="${esc(v(l.color))}"></label>
+      <label>Matière<input name="material" value="${esc(v(l.material))}"></label>
+      <label>Catégorie<select name="category">${catOptions(l.category || guessCat(l.title))}</select></label>
+      <label>Prix de vente (€)<input name="price" type="number" step="0.01" min="0" value="${esc(v(l.price))}"><span class="hint" id="price-hint"></span></label>
+      <label>Coût d'achat (€)<input name="cost" type="number" step="0.01" min="0" value="${esc(v(l.cost))}"><span class="hint">Repris dans la vente</span></label>
+      <label>Frais (studio, emballage) (€)<input name="fees" type="number" step="0.01" min="0" value="${esc(v(l.fees))}"></label>
+      <label>Vues<input name="views" type="number" step="1" min="0" value="${esc(v(l.views))}"></label>
+      <label class="full">Lien fournisseur<input name="sourceUrl" type="url" value="${esc(v(l.sourceUrl))}" placeholder="https://…"></label>
+    </form>
+    <p class="err-msg" id="mform-err" hidden></p>
+    <div class="form-acts">${isNew ? '' : '<button class="btn danger" type="button" id="mform-del">Supprimer</button>'}
+      <button class="btn" type="button" id="mk-pub">Préparer la publication</button>${isNew ? '' : '<button class="btn" type="button" id="mk-sale">Créer la vente</button>'}
+      <div><button class="btn ghost" type="button" data-close>Annuler</button><button class="btn primary" type="submit" form="mform">Enregistrer</button></div></div>`);
+  mbox.classList.add('wide');
+  const form = $('#mform');
+  const grid = $('#ph-grid');
+  const drawPhotos = () => {
+    grid.innerHTML = photos.map((p, i) => `<figure class="ph"><img src="${esc(p)}" alt="Photo ${i + 1}"><figcaption>${i === 0 ? 'Couverture' : i + 1}</figcaption>
+      <div class="ph-acts">${i ? `<button type="button" data-ph-left="${i}" aria-label="Avancer la photo">←</button>` : ''}<button type="button" data-ph-del="${i}" aria-label="Retirer la photo">×</button></div></figure>`).join('') ||
+      '<p class="muted" style="margin:0;font-size:13px">Aucune photo. Prends l\'article en photo à la lumière du jour, sur fond neutre, de face, de dos et les détails (étiquette, matière, défauts).</p>';
+  };
+  drawPhotos();
+  grid.addEventListener('click', e => {
+    const d = e.target.closest('[data-ph-del]'), m = e.target.closest('[data-ph-left]');
+    if (d) { photos.splice(+d.dataset.phDel, 1); drawPhotos(); }
+    if (m) { const i = +m.dataset.phLeft; [photos[i - 1], photos[i]] = [photos[i], photos[i - 1]]; drawPhotos(); }
+  });
+  $('#ph-in').addEventListener('change', async e => {
+    const files = [...e.target.files].slice(0, 20 - photos.length);
+    e.target.value = '';
+    const st = $('#ai-status');
+    for (const [k, f] of files.entries()) {
+      st.textContent = `Traitement des photos ${k + 1}/${files.length}…`;
+      const url = URL.createObjectURL(f);
+      try {
+        const img = await loadImage(url);
+        photos.push(await storePhoto(renderPhoto(img, { enhance: $('#ph-enh').checked, crop: $('#ph-crop').checked })));
+        drawPhotos();
+      } catch (err) { toast(`Photo « ${f.name} » illisible : ${err.message}`); }
+      finally { URL.revokeObjectURL(url); }
+    }
+    st.textContent = files.length ? `${plural(files.length, 'photo ajoutée', 'photos ajoutées')}.` : '';
+  });
+  $('#ai-fill').addEventListener('click', async () => {
+    const btn = $('#ai-fill'), st = $('#ai-status');
+    if (!photos.length) { st.textContent = "Ajoute d'abord au moins une photo."; return; }
+    btn.disabled = true; st.textContent = "L'IA regarde les photos…";
+    try {
+      const fd = Object.fromEntries(new FormData(form).entries());
+      const images = await Promise.all(photos.slice(0, 6).map(photoForAI));
+      const r = await aiRun('listing', { images, hints: { titre: fd.title, marque: fd.brand, taille: fd.size, notes: fd.description, cout_achat: fd.cost } });
+      const set = (name, val, force) => { const el = form.elements[name]; if (el && val != null && val !== '' && (force || !el.value)) el.value = val; };
+      set('title', r.title, true); set('description', r.description, true);
+      set('brand', r.brand); set('size', r.size); set('color', r.color); set('material', r.material);
+      if (CONDITIONS.includes(r.condition)) form.elements.condition.value = r.condition;
+      if (CAT[r.category]) form.elements.category.value = r.category;
+      if (parseNum(r.price_suggested) != null) {
+        set('price', parseNum(r.price_suggested));
+        $('#price-hint').textContent = `IA : ${eur2(parseNum(r.price_low) || 0)} – ${eur2(parseNum(r.price_high) || 0)}`;
+      }
+      const w = $('#ai-warn');
+      const list = Array.isArray(r.warnings) ? r.warnings.filter(Boolean) : [];
+      w.innerHTML = list.map(x => `<li>${esc(x)}</li>`).join('');
+      w.hidden = !list.length;
+      st.textContent = 'Fiche remplie : relis et corrige avant de publier.';
+    } catch (err) { st.textContent = err.message; }
+    finally { btn.disabled = false; }
+  });
+  const save = () => {
+    const d = Object.fromEntries(new FormData(form).entries());
+    if (!d.title.trim()) { const m = $('#mform-err'); m.textContent = "Indique le titre de l'annonce."; m.hidden = false; return null; }
+    Object.assign(l, {
+      accountId: d.accountId, status: d.status, title: d.title.trim(), description: d.description.trim(), brand: d.brand.trim(), size: d.size.trim(),
+      condition: d.condition, color: d.color.trim(), material: d.material.trim(), category: d.category, price: parseNum(d.price), cost: parseNum(d.cost),
+      fees: parseNum(d.fees) || 0, views: parseNum(d.views), sourceUrl: d.sourceUrl.trim(), photos: [...photos],
+    });
+    if (['online', 'reserved', 'sold'].includes(l.status) && !l.publishedAt) l.publishedAt = Date.now();
+    if (!ST.listings.includes(l)) ST.listings.push(l);
+    commit('listing', `${isNew ? 'Annonce ajoutée' : 'Annonce modifiée'} : ${l.title}`, l.accountId);
+    return l;
+  };
+  form.addEventListener('submit', e => { e.preventDefault(); if (save()) { closeModal(); toast('Annonce enregistrée'); } });
+  $('#mk-pub').addEventListener('click', () => { if (save()) { closeModal(); publishModal(l); } });
+  if (!isNew) {
+    $('#mk-sale').addEventListener('click', () => { if (!save()) return; closeModal(); saleForm(null, { accountId: l.accountId, title: l.title, price: l.price == null ? '' : l.price, cost: l.cost == null ? null : l.cost, fees: l.fees || 0, category: l.category, listingId: l.id, photo: (l.photos || [])[0] || null }); });
+    $('#mform-del').addEventListener('click', async () => {
       const ok = await confirmModal({ title: 'Supprimer cette annonce ?', text: l.title, ok: 'Supprimer' });
       if (!ok) return;
       ST.listings = ST.listings.filter(x => x.id !== l.id);
       commit('delete', `Annonce supprimée : ${l.title}`, l.accountId);
-    },
+    });
+  }
+}
+
+/* Publication assistée : tout est prêt à copier-coller dans le formulaire Vinted. */
+function publishModal(l) {
+  const a = accById(l.accountId) || {};
+  const domain = /^(www\.)?vinted\.[a-z.]+$/.test(a.domain || '') ? a.domain : 'www.vinted.fr';
+  const rows = [['Titre', l.title], ['Description', l.description], ['Marque', l.brand], ['Taille', l.size], ['État', l.condition], ['Couleur', l.color], ['Matière', l.material], ['Prix', l.price != null ? NF2.format(l.price) : '']].filter(r => r[1]);
+  const missing = [!l.photos || !l.photos.length ? 'photos' : '', !l.description ? 'description' : '', l.price == null ? 'prix' : '', !l.condition ? 'état' : ''].filter(Boolean);
+  openModal(`<h2 id="modal-t">Publier sur Vinted</h2>
+    <p class="sub">Compte : <b>${esc(a.name || '—')}</b>${a.handle ? ' (@' + esc(a.handle) + ')' : ''}. Vérifie que ce compte est bien connecté sur Vinted avant de publier.</p>
+    ${missing.length ? `<p class="warn">Il manque : ${esc(missing.join(', '))}.</p>` : ''}
+    <ol class="pub-steps">
+      <li><b>Télécharge les photos</b> (dans l'ordre, la première sert de couverture).
+        <div class="ph-grid small">${(l.photos || []).map((p, i) => `<a class="ph" href="${esc(p)}" download="${esc(slug(l.title))}-${i + 1}.jpg" title="Télécharger la photo ${i + 1}"><img src="${esc(p)}" alt="Photo ${i + 1}"><figcaption>${i + 1} ↓</figcaption></a>`).join('') || '<span class="muted">Aucune photo.</span>'}</div>
+        ${(l.photos || []).length > 1 ? '<button class="btn" type="button" id="dl-all" style="margin-top:8px">Tout télécharger</button>' : ''}</li>
+      <li><b>Ouvre le formulaire Vinted</b> : <a class="btn primary" href="https://${esc(domain)}/items/new" target="_blank" rel="noopener noreferrer">Ouvrir Vinted ↗</a></li>
+      <li><b>Copie chaque champ</b> :
+        <div class="copy-list">${rows.map(([k, val], i) => `<div class="copy-row"><span class="k">${esc(k)}</span><span class="v">${esc(val)}</span><button class="btn" type="button" data-copy="${i}">Copier</button></div>`).join('')}</div></li>
+      <li><b>Publie sur Vinted</b>, puis marque l'annonce ici : <button class="btn primary" type="button" id="mark-pub">C'est publié</button></li>
+    </ol>
+    <div class="form-acts"><div><button class="btn ghost" type="button" data-close>Fermer</button></div></div>`);
+  mbox.classList.add('wide');
+  mbox.querySelectorAll('[data-copy]').forEach(b => b.addEventListener('click', () => {
+    const val = rows[+b.dataset.copy][1];
+    navigator.clipboard.writeText(String(val)).then(() => { b.textContent = 'Copié ✓'; setTimeout(() => { b.textContent = 'Copier'; }, 1500); },
+      () => { toast('Copie bloquée par le navigateur : sélectionne le texte à la main.'); });
+  }));
+  const dl = $('#dl-all');
+  if (dl) dl.addEventListener('click', async () => {
+    for (const [i, p] of (l.photos || []).entries()) {
+      const a2 = document.createElement('a');
+      a2.href = p; a2.download = `${slug(l.title)}-${i + 1}.jpg`;
+      document.body.appendChild(a2); a2.click(); a2.remove();
+      await new Promise(r => setTimeout(r, 350));
+    }
+  });
+  $('#mark-pub').addEventListener('click', () => {
+    l.status = 'online';
+    l.publishedAt = l.publishedAt || Date.now();
+    commit('listing', `Annonce publiée : ${l.title}`, l.accountId);
+    closeModal();
+    toast('Annonce marquée en ligne');
+  });
+}
+const slug = s => String(s || 'article').toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '').replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 50) || 'article';
+
+/* Recherche d'articles : calcul de marge avant d'acheter. */
+function sourcingForm() {
+  if (needAccount()) return;
+  openModal(`<h2 id="modal-t">Sourcer un article</h2>
+    <p class="sub">Colle le lien du produit chez ton fournisseur : l'outil calcule ta marge avant d'acheter.</p>
+    <form class="form" id="mform" novalidate>
+      <label class="full">Lien du produit<span class="row" style="flex-wrap:nowrap"><input name="url" type="url" placeholder="https://…" style="flex:1"><button class="btn" type="button" id="src-read">Lire la page</button></span><span class="hint" id="src-hint"></span></label>
+      <div class="full src-prev" id="src-prev" hidden></div>
+      <label class="full">Article<input name="title" required placeholder="Ex. Pantalon cargo parachute noir"></label>
+      <label>Prix fournisseur (€)<input name="supplier" type="number" step="0.01" min="0"></label>
+      <label>Livraison / frais d'achat (€)<input name="shipping" type="number" step="0.01" min="0" value="0"></label>
+      <label>Frais de vente (studio, emballage) (€)<input name="fees" type="number" step="0.01" min="0" value="0"></label>
+      <label>Prix de revente prévu (€)<input name="resale" type="number" step="0.01" min="0"><button class="link" type="button" id="src-ai" style="justify-self:start">✦ Estimer avec l'IA</button></label>
+      <label>Compte<select name="accountId">${accOptions(UI.acc || ST.accounts[0].id)}</select></label>
+      <label>Quantité<input name="qty" type="number" step="1" min="1" max="50" value="1"></label>
+      <div class="full margin-box" id="src-calc"></div>
+    </form>
+    <p class="err-msg" id="mform-err" hidden></p>
+    <div class="form-acts"><div><button class="btn ghost" type="button" data-close>Annuler</button><button class="btn primary" type="submit" form="mform">Ajouter à « À sourcer »</button></div></div>`);
+  mbox.classList.add('wide');
+  const form = $('#mform');
+  let image = '';
+  const calc = () => {
+    const d = Object.fromEntries(new FormData(form).entries());
+    const cost = (parseNum(d.supplier) || 0) + (parseNum(d.shipping) || 0);
+    const resale = parseNum(d.resale), fees = parseNum(d.fees) || 0;
+    if (resale == null || !cost) { $('#src-calc').innerHTML = '<span class="muted">Renseigne le prix fournisseur et le prix de revente pour voir la marge.</span>'; return; }
+    const m = resale - cost - fees, pct = resale ? m / resale * 100 : 0, mult = cost ? resale / cost : 0;
+    const cls = m <= 0 ? 'neg' : pct < 30 ? 'mid' : 'pos';
+    $('#src-calc').innerHTML = `<div class="mg ${cls}"><b>${m >= 0 ? '+' : '−'}${esc(eur2(Math.abs(m)))}</b> par article · marge ${Math.round(pct)}${NB}% · ×${NF1.format(mult)}</div>
+      <div class="muted" style="font-size:12.5px">Coût ${esc(eur2(cost))} + frais ${esc(eur2(fees))} · revente ${esc(eur2(resale))}${cls === 'mid' ? ' · marge faible : prévois les offres et réductions' : ''}${cls === 'neg' ? ' · article à perte' : ''}</div>`;
+  };
+  form.addEventListener('input', calc);
+  calc();
+  $('#src-read').addEventListener('click', async () => {
+    const hint = $('#src-hint');
+    const url = form.elements.url.value.trim();
+    if (!/^https?:\/\//.test(url)) { hint.textContent = 'Colle une adresse qui commence par https://'; return; }
+    if (!isServer()) { hint.textContent = 'La lecture de page demande le serveur local (npm start).'; return; }
+    hint.textContent = 'Lecture de la page…';
+    try {
+      const m = await api('api/fetch-meta?url=' + encodeURIComponent(url));
+      if (m.title && !form.elements.title.value) form.elements.title.value = m.title.replace(/\s*\|.*$/, '').slice(0, 100);
+      if (m.price != null && !form.elements.supplier.value) form.elements.supplier.value = m.price;
+      image = m.image || '';
+      const prev = $('#src-prev');
+      prev.hidden = !image && !m.title;
+      prev.innerHTML = `${image ? `<img src="${esc(image)}" alt="" referrerpolicy="no-referrer">` : ''}<div><b>${esc(m.title || 'Sans titre')}</b><div class="muted">${m.price != null ? esc(eur2(m.price)) + (m.currency && m.currency !== 'EUR' ? ' ' + esc(m.currency) : '') : 'Prix non trouvé : saisis-le'}</div></div>`;
+      hint.textContent = m.title ? 'Infos récupérées : vérifie-les.' : "Page lue, mais pas d'infos produit : saisis-les.";
+      calc();
+    } catch (err) { hint.textContent = err.message + '. Saisis les infos à la main.'; }
+  });
+  $('#src-ai').addEventListener('click', async () => {
+    const b = $('#src-ai');
+    const d = Object.fromEntries(new FormData(form).entries());
+    if (!d.title.trim()) { $('#src-hint').textContent = "Indique d'abord le nom de l'article."; return; }
+    b.disabled = true; b.textContent = 'Estimation…';
+    try {
+      const r = await aiRun('price', { article: d.title, cout: (parseNum(d.supplier) || 0) + (parseNum(d.shipping) || 0), etat: 'neuf', plateforme: 'Vinted France' });
+      if (parseNum(r.price_suggested) != null) form.elements.resale.value = parseNum(r.price_suggested);
+      $('#src-hint').textContent = `IA : ${eur2(parseNum(r.price_low) || 0)} – ${eur2(parseNum(r.price_high) || 0)}. ${r.reasoning || ''}`;
+      calc();
+    } catch (err) { $('#src-hint').textContent = err.message; }
+    finally { b.disabled = false; b.textContent = "✦ Estimer avec l'IA"; }
+  });
+  form.addEventListener('submit', e => {
+    e.preventDefault();
+    const d = Object.fromEntries(new FormData(form).entries());
+    if (!d.title.trim()) { const m = $('#mform-err'); m.textContent = "Indique le nom de l'article."; m.hidden = false; return; }
+    const qty = clamp(Math.round(parseNum(d.qty) || 1), 1, 50);
+    const cost = (parseNum(d.supplier) || 0) + (parseNum(d.shipping) || 0);
+    for (let i = 0; i < qty; i++) {
+      ST.listings.push({ id: uid(), accountId: d.accountId, title: d.title.trim(), category: guessCat(d.title), price: parseNum(d.resale), cost: cost || null, fees: parseNum(d.fees) || 0, status: 'sourcing', publishedAt: null, views: null, favourites: null, photos: [], sourceUrl: d.url.trim(), sourceImage: image, createdAt: Date.now(), source: 'sourcing' });
+    }
+    commit('listing', `À sourcer : ${d.title.trim()}${qty > 1 ? ' ×' + qty : ''}`, d.accountId);
+    closeModal();
+    toast(qty > 1 ? `${qty} articles ajoutés à « À sourcer »` : 'Article ajouté à « À sourcer »');
+  });
+}
+
+/* Réglages de l'IA */
+const PROVIDERS = { anthropic: 'Claude (Anthropic)', openai: 'ChatGPT (OpenAI)', gemini: 'Gemini (Google)' };
+async function renderAISettings() {
+  const box = $('#ai-settings');
+  if (!isServer()) { box.innerHTML = '<p class="muted">L\'IA passe par le serveur local, qui garde tes clés en sécurité : lance « npm start » puis ouvre http://localhost:3000.</p>'; return; }
+  let cfg;
+  try { cfg = await api('api/ai/config'); } catch (err) { box.innerHTML = `<p class="warn">${esc(err.message)}</p>`; return; }
+  box.innerHTML = `<form class="form" id="ai-form">
+      <label class="full">IA utilisée<select name="provider">${Object.entries(PROVIDERS).map(([k, n]) => `<option value="${k}"${k === cfg.provider ? ' selected' : ''}>${esc(n)}${cfg.providers[k].hasKey ? '' : ' · clé manquante'}</option>`).join('')}</select></label>
+      ${Object.entries(PROVIDERS).map(([k, n]) => { const p = cfg.providers[k]; return `
+      <label>Clé ${esc(n)}<input name="key-${k}" type="password" autocomplete="off" placeholder="${p.hasKey ? (p.fromEnv ? 'depuis la variable d\'environnement' : 'enregistrée ' + esc(p.hint)) : 'colle ta clé API'}"><span class="hint">${p.hasKey && !p.fromEnv ? 'Laisse vide pour la garder, « - » pour l\'effacer' : 'Gardée sur ton ordinateur (data/config.json)'}</span></label>
+      <label>Modèle ${esc(n)}<input name="model-${k}" value="${esc(p.model)}" placeholder="${esc(p.defaultModel)}"><span class="hint">Vide = ${esc(p.defaultModel)}</span></label>`; }).join('')}
+      <div class="full row"><button class="btn primary" type="submit">Enregistrer</button><button class="btn" type="button" id="ai-test">Tester la connexion</button><span class="muted" id="ai-test-res" style="font-size:12.5px"></span></div>
+    </form>`;
+  const f = $('#ai-form');
+  f.addEventListener('submit', async e => {
+    e.preventDefault();
+    const d = Object.fromEntries(new FormData(f).entries());
+    const body = { provider: d.provider, keys: {}, models: {} };
+    for (const k of Object.keys(PROVIDERS)) { body.keys[k] = d['key-' + k] || ''; body.models[k] = d['model-' + k] || ''; }
+    try { await api('api/ai/config', { method: 'PUT', body: JSON.stringify(body) }); toast('Réglages IA enregistrés'); renderAISettings(); }
+    catch (err) { toast(err.message); }
+  });
+  $('#ai-test').addEventListener('click', async () => {
+    const out = $('#ai-test-res');
+    out.textContent = 'Test en cours…';
+    try { const r = await api('api/ai/run', { method: 'POST', body: JSON.stringify({ task: 'ping', input: {} }) }); out.textContent = `OK : ${PROVIDERS[r.provider]} répond (${r.model}).`; }
+    catch (err) { out.textContent = err.message; }
   });
 }
 
@@ -1259,6 +1573,8 @@ document.addEventListener('click', e => {
     if (a === 'new-sale') saleForm();
     else if (a === 'new-listing') listingForm();
     else if (a === 'new-account') accountForm();
+    else if (a === 'source') sourcingForm();
+    else if (a === 'publish') { const l = ST.listings.find(x => x.id === act.dataset.id); if (l) publishModal(l); }
     return;
   }
   const sale = e.target.closest('[data-sale]');

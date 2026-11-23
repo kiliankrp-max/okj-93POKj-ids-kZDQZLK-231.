@@ -310,6 +310,30 @@ a{color:var(--lavender)}
 .tip-r i{width:8px;height:8px;border-radius:2px}
 .tip-r b{font-weight:600;font-variant-numeric:tabular-nums}
 .toast{position:fixed;left:50%;bottom:calc(20px + env(safe-area-inset-bottom,0px));transform:translateX(-50%);z-index:70;background:var(--tip);border:1px solid var(--line-2);color:var(--text);border-radius:10px;padding:9px 14px;font-size:13px;box-shadow:0 10px 30px rgba(0,0,0,.4);max-width:calc(100% - 32px)}
+.box.wide{width:min(820px,100%)}
+.ph-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(110px,1fr));gap:8px}
+.ph-grid.small{grid-template-columns:repeat(auto-fill,minmax(80px,1fr));margin-top:8px}
+.ph{position:relative;margin:0;border-radius:10px;overflow:hidden;background:var(--bg-2);border:1px solid var(--line);aspect-ratio:3/4;display:block;max-width:100%}
+.ph img{width:100%;height:100%;object-fit:cover;display:block}
+.ph figcaption{position:absolute;left:6px;bottom:6px;font-size:11px;background:rgba(0,0,0,.6);color:#fff;border-radius:6px;padding:1px 6px}
+.ph-acts{position:absolute;top:5px;right:5px;display:flex;gap:4px}
+.ph-acts button{appearance:none;border:0;width:24px;height:24px;border-radius:6px;background:rgba(0,0,0,.65);color:#fff;font-size:13px;line-height:1}
+.chk{display:inline-flex;align-items:center;gap:6px;font-size:13px;color:var(--text-2)}
+.ph-zone{border:1px dashed var(--line-2);border-radius:12px;padding:12px;margin-bottom:12px}
+.hint-l{font-size:12px;color:var(--faint);margin:8px 0 0}
+.ai-row{margin-bottom:12px}
+.btn.ai{background:color-mix(in srgb,var(--purple) 22%,transparent);border-color:color-mix(in srgb,var(--purple) 55%,transparent)}
+.btn:disabled{opacity:.55;cursor:wait}
+.warn-list{margin:0 0 12px;padding:10px 14px 10px 30px;border-radius:10px;background:color-mix(in srgb,var(--amber) 10%,transparent);color:#f1cf98;font-size:13px}
+.pub-steps{margin:6px 0 0;padding-left:20px;display:grid;gap:16px;font-size:14px}
+.copy-list{display:grid;gap:6px;margin-top:8px}
+.copy-row{display:grid;grid-template-columns:90px minmax(0,1fr) auto;gap:10px;align-items:start;padding:8px 10px;border:1px solid var(--line);border-radius:10px}
+.copy-row .k{color:var(--muted);font-size:12.5px;padding-top:6px}
+.copy-row .v{white-space:pre-wrap;font-size:13px;color:var(--text-3);max-height:120px;overflow:auto;padding-top:5px}
+.src-prev{display:flex;gap:12px;align-items:center;padding:10px;border:1px solid var(--line);border-radius:10px;font-size:13px}
+.src-prev img{width:56px;height:56px;object-fit:cover;border-radius:8px}
+.margin-box{padding:12px 14px;border-radius:10px;background:var(--bg-2);display:grid;gap:3px}
+.mg{font-size:15px}.mg.pos b{color:var(--green-2)}.mg.mid b{color:var(--amber)}.mg.neg b{color:var(--red)}
 .foot{color:var(--faint);font-size:12px;padding-top:18px;max-width:90ch}
 </style>
 </head>
@@ -446,7 +470,7 @@ a{color:var(--lavender)}
   <section data-view="annonces" hidden>
     <div class="page-h">
       <div><h2>Annonces</h2><p>Articles à sourcer, prêts à publier, en ligne ou vendus. Les publications et vues du tableau de bord viennent d'ici.</p></div>
-      <div class="acts"><button class="btn primary" type="button" data-act="new-listing">+ Ajouter une annonce</button></div>
+      <div class="acts"><button class="btn primary" type="button" data-act="new-listing">+ Nouvelle annonce</button><button class="btn" type="button" data-act="source">Sourcer un article</button></div>
     </div>
     <div class="toolbar">
       <input class="inp" id="a-q" type="search" placeholder="Rechercher une annonce" aria-label="Rechercher une annonce">
@@ -455,7 +479,7 @@ a{color:var(--lavender)}
     </div>
     <div class="summary" id="a-sum"></div>
     <div class="tbl-wrap"><table class="tbl" id="a-tbl">
-      <thead><tr><th>Publiée le</th><th>Compte</th><th>Article</th><th class="r">Prix</th><th class="r">Vues</th><th class="r">Favoris</th><th>Statut</th></tr></thead>
+      <thead><tr><th>Publiée le</th><th>Compte</th><th>Article</th><th class="r">Prix</th><th class="r">Vues</th><th class="r">Favoris</th><th>Statut</th><th></th></tr></thead>
       <tbody></tbody>
     </table></div>
     <button class="more" id="a-more" type="button" hidden>Afficher plus</button>
@@ -498,6 +522,11 @@ a{color:var(--lavender)}
           <label>Coût d'achat par défaut (% du prix)<input type="number" min="0" max="100" step="0.1" name="defaultCostPct" id="set-cost"><span class="hint">Utilisé pour les ventes sans coût renseigné</span></label>
           <div class="full"><button class="btn primary" type="submit">Enregistrer</button></div>
         </form>
+      </div>
+      <div class="panel-box">
+        <h3>Intelligence artificielle</h3>
+        <p>Sert à rédiger les annonces à partir de tes photos et à estimer les prix de revente. Choisis ton IA et colle ta clé API : elle reste sur ton ordinateur.</p>
+        <div id="ai-settings"></div>
       </div>
       <div class="panel-box">
         <h3>Sauvegarde</h3>
