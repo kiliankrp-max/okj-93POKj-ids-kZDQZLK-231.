@@ -1,0 +1,12 @@
+{
+  "name": "tableau-de-bord-vinted",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Tableau de bord multi-comptes Vinted : ventes, annonces, synchro, statistiques.",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}

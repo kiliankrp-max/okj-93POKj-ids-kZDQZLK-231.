@@ -1,39 +1,56 @@
-# Tableau de bord Vinted
+# Tableau de bord Vinted multi-comptes
 
-Reproduction du dashboard vu dans la vidéo : thème sombre, mêmes blocs, mêmes chiffres sur 30 jours (6 792 € de bénéfice, 12 688 € de CA, 427 commandes…), plus des fonctions en plus.
+Tableau de bord pour suivre plusieurs comptes Vinted : ventes, annonces, vues, porte-monnaie, bénéfice. Chaque compte a ses propres données ; le tableau de bord additionne tous les comptes (ou en montre un seul avec le filtre « Compte »).
 
-## Ouvrir
+Aucune donnée d'exemple : tout part de zéro et se remplit avec tes comptes.
 
-Double-clique sur `index.html`. Aucune installation, aucun serveur.
+## Lancer
 
-## Repris de la vidéo
+Il faut [Node.js](https://nodejs.org) 18 ou plus, rien d'autre (aucune dépendance).
 
-- Périodes : Aujourd'hui, Hier, 7 jours, 30 jours, Ce mois, Mois dernier
-- KPI : bénéfice (achats, studio), chiffre d'affaires (panier moyen), commandes, avec ▲ % comparé à la période d'avant, même heure
-- Porte-monnaie : disponible et en attente de validation
-- Graphes : bénéfice par jour (pic, dernier point, moyenne), chiffre d'affaires et commandes, vues par jour, publications et commandes
-- Classement des comptes sur 14 jours, avec « Voir les 7 autres comptes »
-- Dernières ventes
+```bash
+npm start
+```
 
-## En plus
+Ouvre ensuite http://localhost:3000 dans ton navigateur.
 
-- 4ᵉ KPI « Vues » avec taux de conversion, courbe miniature sous chaque KPI
-- Infobulles au survol (ou au doigt sur mobile) sur tous les graphes
-- Filtre par compte (menu, ou clic dans le classement) et tri du classement (bénéfice, CA, ventes)
-- Tiroir « Toutes les ventes » : recherche, statut de chaque vente, copie en CSV
-- Objectif du mois modifiable
-- Activité de Claude en direct (simulée), statut des articles, ventes par heure, top catégories
-- Mise en page mobile
+- Les données sont enregistrées dans `data/db.json`, avec des sauvegardes automatiques dans `data/backups/` (une toutes les 10 minutes au plus, les 30 dernières gardées).
+- Le serveur n'écoute que sur ton ordinateur. Pour l'ouvrir à ton réseau local (ex. depuis ton téléphone) : `HOST=0.0.0.0 npm start`. Ne l'expose pas sur Internet : il n'y a pas de mot de passe.
+- Autre port : `PORT=4000 npm start`.
+- Sans serveur, `public/index.html` s'ouvre aussi directement, mais les données restent alors dans le navigateur et la synchro automatique ne marche pas.
 
-## Brancher tes vraies données
+## Pages
 
-Les chiffres actuels sont des données d'exemple. Tout vient de `buildData()` dans `index.html`, qui renvoie :
+- **Tableau de bord** : bénéfice, chiffre d'affaires, commandes, vues avec comparaison à la période d'avant (même heure), porte-monnaie, objectif du mois, graphes, classement des comptes sur 14 jours, dernières ventes, journal, statut des articles, ventes par heure, top catégories. Périodes : Aujourd'hui, Hier, 7 jours, 30 jours, Ce mois, Mois dernier.
+- **Ventes** : toutes les ventes, recherche et filtres, ajout / modification / suppression, statut modifiable dans le tableau, import et export CSV.
+- **Annonces** : à sourcer, prêtes à publier, en ligne, vendues… « Créer la vente » depuis une annonce reprend son titre, son prix et son coût.
+- **Comptes** : ajout, modification, statut, porte-monnaie, suppression, synchro Vinted.
+- **Réglages** : objectif mensuel, coût d'achat par défaut, sauvegarde / restauration, tout effacer.
 
-- `orders` : liste de ventes `{ t, acc, title, cat, col, bg, price, profit, achat, studio, status }`
-  - `t` : date en millisecondes, `acc` : identifiant du compte (`agathe`, `alix`…)
-  - `status` : `ship` (à envoyer), `sent` (envoyée), `wait` (en attente de validation), `done` (validée)
-- `V` et `PB` : vues et publications par jour et par heure (`[jour][heure]`, 100 jours, le dernier = aujourd'hui)
-- `SH` : part de chaque compte par jour, pour filtrer les vues et publications
-- `wallet` : `{ dispo, wait }`
+## Calculs
 
-Remplace le contenu de la fonction par tes exports en gardant cette forme : le reste du tableau de bord suit.
+- Chiffre d'affaires = somme des prix de vente (ventes annulées exclues).
+- Bénéfice = prix − coût d'achat − frais. Une vente sans coût d'achat utilise le « coût par défaut » des réglages (0 % au départ) : renseigne tes coûts pour un bénéfice juste.
+- Vues : relevées à chaque synchro ; le tableau de bord compte les vues gagnées depuis la synchro précédente, jour par jour. La toute première synchro sert de point de départ.
+- Publications : annonces passées « En ligne » (date de publication).
+
+## Connecter un compte Vinted
+
+Vinted ne propose pas d'API officielle. La synchro passe par un favori (bookmarklet) :
+
+1. Lance l'appli (`npm start`) et ouvre la page **Comptes**.
+2. Fais glisser le bouton « ↻ Synchro Vinted » dans ta barre de favoris.
+3. Ouvre www.vinted.fr dans le même navigateur, connecte-toi au compte voulu, clique le favori.
+4. Le favori lit tes ventes, tes annonces (vues, favoris) et ton porte-monnaie avec ta session, puis les envoie au tableau de bord. Un compte inconnu est créé automatiquement. Recommence pour chaque compte, et à chaque fois que tu veux mettre à jour.
+
+Ton mot de passe n'est jamais demandé ni stocké. Si la fenêtre du tableau de bord ne s'ouvre pas, le favori propose de copier les données : colle-les dans Comptes > « Coller des données de synchro ».
+
+Limites à connaître :
+
+- Le favori utilise les adresses internes du site Vinted (`/api/v2/users/current`, `/api/v2/my_orders`, `/api/v2/wardrobe/…/items`). Elles ne sont pas documentées et peuvent changer : si une synchro est incomplète, le message d'erreur s'affiche sur la carte du compte. L'import CSV et la saisie manuelle restent possibles.
+- Les statuts de commande Vinted sont convertis par mots-clés (annulée, terminée, livrée, à envoyer, envoyée). Un statut modifié à la main n'est plus écrasé par la synchro.
+- Les conditions d'utilisation de Vinted encadrent le multi-comptes et l'automatisation : vérifie-les, un compte peut être suspendu.
+
+## Import CSV
+
+Première ligne = en-têtes. Colonnes reconnues (séparateur `;` ou `,`) : `date`, `compte`, `article`, `prix`, `coût`, `frais`, `statut`, `catégorie`. Seules `article` et `prix` sont obligatoires. Dates `jj/mm/aaaa hh:mm` ou `aaaa-mm-jj`. Les comptes inconnus sont créés. L'export CSV utilise le même format.
